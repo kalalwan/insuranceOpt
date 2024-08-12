@@ -145,4 +145,4 @@ if st.button("Optimize and Visualize"):
             st.write(f"Expected Return: {expected_return:.2%}")
             st.write(f"Portfolio Risk: {sum(r * a for r, a in zip(risk_values, optimal_allocation)):.2%}")
     else:
-        st.error("Optimization failed. Please adjust the parameters and try again.")
+        st.error("Optimization failed. Please adjust the parameters and try again.") 
