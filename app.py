@@ -1,148 +1,238 @@
 import streamlit as st
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
-from scipy.optimize import linprog
+from pulp import *
 
-st.set_page_config(layout="wide")
-st.title("3D Insurance Portfolio Optimization")
+# Set page config
+st.set_page_config(page_title="Premium Pricing Optimizer", layout="wide")
 
-# Define the three portfolios
-portfolios = ['Auto', 'Home', 'Commercial']
+# Title
+st.title("Case Study: New Business Pricing Optimizer")
+
+# Top navigation bar
+st.markdown("""
+<style>
+.stButton button {
+    width: 100%;
+}
+</style>
+""", unsafe_allow_html=True)
+
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    home_button = st.button("Home")
+with col2:
+    model_button = st.button("Model")
+with col3:
+    results_button = st.button("Results")
+with col4:
+    insights_button = st.button("Insights")
+
+# Determine which page to show
+if home_button:
+    page = "Home"
+elif model_button:
+    page = "Model"
+elif results_button:
+    page = "Results"
+elif insights_button:
+    page = "Insights"
+else:
+    page = "Home"  # Default page
+
+st.markdown("---")  # Add a separator line
+
+# Function to reset parameters
+def reset_parameters():
+    st.session_state.TP = 100000
+    st.session_state.demand_elasticity = 1.0
+    st.session_state.retention_sensitivity = 1.0
+    st.session_state.competitiveness_sensitivity = 1.0
+    st.session_state.base_operating_ratio = 0.85
+    st.session_state.w1 = 0.4
+    st.session_state.w2 = 0.3
+    st.session_state.w3 = 0.2
+    st.session_state.w4 = 0.1
 
 # Sidebar for input parameters
-st.sidebar.header("Portfolio Parameters")
+st.sidebar.header("Input Parameters")
 
-# Function to create a color gradient
-def get_color(i, n):
-    return f"rgb({255-int(255*i/n)}, {int(255*i/n)}, 150)"
+# Add reset button
+st.sidebar.button("Reset Parameters", on_click=reset_parameters)
 
-expected_returns = {}
-risks = {}
-min_allocations = {}
+# Technical Premium
+TP = st.sidebar.number_input("Technical Premium ($)", min_value=1000, max_value=1000000, value=st.session_state.get('TP', 100000), help="The base premium calculated to achieve a 92% combined ratio.")
 
-for i, p in enumerate(portfolios):
-    color = get_color(i, len(portfolios))
-    st.sidebar.markdown(f"<h3 style='color: {color};'>{p} Portfolio</h3>", unsafe_allow_html=True)
-    expected_returns[p] = st.sidebar.slider(f"Expected Return - {p}", 0.0, 0.20, 0.10, 0.01, key=f"return_{p}")
-    risks[p] = st.sidebar.slider(f"Risk - {p}", 0.0, 0.15, 0.05, 0.01, key=f"risk_{p}")
-    min_allocations[p] = st.sidebar.slider(f"Minimum Allocation - {p}", 0.0, 0.5, 0.1, 0.01, key=f"min_alloc_{p}")
-    st.sidebar.markdown("---")
+# Elasticity and sensitivity parameters
+demand_elasticity = st.sidebar.slider("Demand Elasticity", 0.5, 2.0, st.session_state.get('demand_elasticity', 1.0), help="How sensitive sales are to price changes.")
+retention_sensitivity = st.sidebar.slider("Retention Sensitivity", 0.1, 2.0, st.session_state.get('retention_sensitivity', 1.0), help="How sensitive customer retention is to price increases.")
+competitiveness_sensitivity = st.sidebar.slider("Competitiveness Sensitivity", 0.1, 2.0, st.session_state.get('competitiveness_sensitivity', 1.0), help="How sensitive market competitiveness is to price changes.")
 
-max_risk = st.sidebar.slider("Maximum Portfolio Risk", 0.0, 0.15, 0.07, 0.01)
+# Base operating ratio
+base_operating_ratio = st.sidebar.slider("Base Operating Ratio", 0.7, 0.9, st.session_state.get('base_operating_ratio', 0.85), help="The starting point for operational efficiency.")
+
+# Objective weights
+st.sidebar.subheader("Objective Weights")
+w1 = st.sidebar.slider("Profit Weight", 0.0, 1.0, st.session_state.get('w1', 0.4), help="Importance of profit in the optimization.")
+w2 = st.sidebar.slider("Retention Weight", 0.0, 1.0, st.session_state.get('w2', 0.3), help="Importance of customer retention in the optimization.")
+w3 = st.sidebar.slider("Competitiveness Weight", 0.0, 1.0, st.session_state.get('w3', 0.2), help="Importance of market competitiveness in the optimization.")
+w4 = st.sidebar.slider("Operating Ratio Weight", 0.0, 1.0, st.session_state.get('w4', 0.1), help="Importance of operating ratio in the optimization.")
 
 # Optimization function
-def optimize_portfolio(returns, risks, min_allocs, max_risk):
-    c = [-r for r in returns]  # Negative because we're maximizing
-    A_ub = [risks, [-1, -1, -1]]
-    b_ub = [max_risk, -1]  # -1 because sum of allocations should be >= 1
-    A_eq = [[1, 1, 1]]
-    b_eq = [1]
-    bounds = [(min_alloc, 1) for min_alloc in min_allocs]
-    
-    res = linprog(c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method='highs')
-    return res.x if res.success else None
+def optimize_pricing(TP, demand_elasticity, retention_sensitivity, competitiveness_sensitivity, 
+                     base_operating_ratio, w1, w2, w3, w4):
+    # Create the LP problem
+    prob = LpProblem("Insurance_Pricing_Optimization", LpMaximize)
 
-# Generate points for the feasible region
-def generate_feasible_points(risks, min_allocs, max_risk, n=5000):
-    points = []
-    for _ in range(n):
-        x = np.random.rand(3)
-        x = np.maximum(x, min_allocs)
-        x /= x.sum()  # Normalize to sum to 1
-        if np.dot(risks, x) <= max_risk and all(x[i] >= min_allocs[i] for i in range(3)):
-            points.append(x)
-    return np.array(points)
+    # Decision variable
+    x = LpVariable("Flex", lowBound=-0.15, upBound=0.20)
 
-# Display objective function and constraints
-def display_problem_formulation(returns, risks, min_allocs, max_risk):
-    st.subheader("Problem Formulation")
-    
-    st.write("**Objective Function (to maximize):**")
-    obj_func = " + ".join([f"{r:.2f}x_{i+1}" for i, r in enumerate(returns)])
-    st.latex(f"\\text{{Maximize }} {obj_func}")
-    
-    st.write("**Constraints:**")
-    risk_constraint = " + ".join([f"{r:.2f}x_{i+1}" for i, r in enumerate(risks)])
-    st.latex(f"{risk_constraint} \leq {max_risk:.2f}")
-    st.latex("x_1 + x_2 + x_3 = 1")
-    for i, min_alloc in enumerate(min_allocs):
-        st.latex(f"x_{i+1} \geq {min_alloc:.2f}")
-    st.latex("x_1, x_2, x_3 \leq 1")
-    
-    st.write("Where:")
-    for i, p in enumerate(portfolios):
-        st.write(f"x_{i+1} = Allocation to {p} portfolio")
+    # Piecewise linear approximation
+    segments = 10
+    breakpoints = np.linspace(-0.15, 0.20, segments + 1)
+    lambdas = LpVariable.dicts("lambda", range(segments), lowBound=0, upBound=1)
 
-# Optimize and visualize
-if st.button("Optimize and Visualize"):
-    returns = list(expected_returns.values())
-    risk_values = list(risks.values())
-    min_alloc_values = list(min_allocations.values())
+    # Helper functions
+    def ExpectedSales(x):
+        return 1 - demand_elasticity * x
+
+    def Profit(x):
+        return TP * (1 + x) * ExpectedSales(x) * (1 - (base_operating_ratio / (1 + x)))
+
+    def Retention(x):
+        return 1 - retention_sensitivity * max(0, x)
+
+    def Competitiveness(x):
+        return 1 - competitiveness_sensitivity * abs(x)
+
+    def OperatingRatio(x):
+        return base_operating_ratio / (1 + x)
+
+    # Objective function using piecewise linear approximation
+    prob += w1 * lpSum([lambdas[i] * Profit(breakpoints[i]) for i in range(segments)]) + \
+            w2 * lpSum([lambdas[i] * Retention(breakpoints[i]) for i in range(segments)]) + \
+            w3 * lpSum([lambdas[i] * Competitiveness(breakpoints[i]) for i in range(segments)]) - \
+            w4 * lpSum([lambdas[i] * OperatingRatio(breakpoints[i]) for i in range(segments)]), "Total_Score"
+
+    # Constraints
+    prob += lpSum(lambdas) == 1, "Sum_of_Lambdas"
+    prob += x == lpSum([lambdas[i] * breakpoints[i] for i in range(segments)]), "Flex_Definition"
+    prob += lpSum([lambdas[i] * OperatingRatio(breakpoints[i]) for i in range(segments)]) <= 0.92, "Max_Combined_Ratio"
+    prob += lpSum([lambdas[i] * Competitiveness(breakpoints[i]) for i in range(segments)]) >= 0.80, "Min_Competitiveness"
+
+    # Solve the problem
+    prob.solve()
+
+    # Extract results
+    flex = value(x)
+    final_premium = TP * (1 + flex)
+    profit = sum([value(lambdas[i]) * Profit(breakpoints[i]) for i in range(segments)])
+    retention = sum([value(lambdas[i]) * Retention(breakpoints[i]) for i in range(segments)])
+    competitiveness = sum([value(lambdas[i]) * Competitiveness(breakpoints[i]) for i in range(segments)])
+    operating_ratio = sum([value(lambdas[i]) * OperatingRatio(breakpoints[i]) for i in range(segments)])
+
+    return {
+        "Flex": flex,
+        "Final Premium": final_premium,
+        "Profit": profit,
+        "Retention": retention,
+        "Competitiveness": competitiveness,
+        "Operating Ratio": operating_ratio,
+        "Problem": prob
+    }
+
+# Run optimization
+results = optimize_pricing(TP, demand_elasticity, retention_sensitivity, competitiveness_sensitivity, 
+                           base_operating_ratio, w1, w2, w3, w4)
+
+# Content based on navigation
+if page == "Home":
+    st.header("Welcome to the Insurance Premium Pricing Optimizer")
+    st.write("""
+    This tool helps optimize pricing strategies for new business accounts. 
+    Use the navigation bar above to explore different sections and the sidebar to adjust parameters.
+    """)
+
+elif page == "Model":
+    st.header("Linear Programming Model")
     
-    # Create two columns
-    col1, col2 = st.columns([1, 1])
+    with st.expander("View General Linear Program Formulation"):
+        st.latex(r"""
+        \begin{align*}
+        \text{Maximize: } & w_1 \cdot \text{Profit}(x) + w_2 \cdot \text{Retention}(x) + w_3 \cdot \text{Competitiveness}(x) - w_4 \cdot \text{OperatingRatio}(x) \\[10pt]
+        \text{Subject to:} & \\
+        & -0.15 \leq x \leq 0.20 \quad \text{(Flex bounds)} \\
+        & \text{OperatingRatio}(x) \leq 0.92 \quad \text{(Maximum combined ratio)} \\
+        & \text{Competitiveness}(x) \geq 0.80 \quad \text{(Minimum competitiveness)} \\[10pt]
+        \text{Where:} & \\
+        & x \text{ is the flex (decision variable)} \\
+        & \text{Profit}(x) = TP \cdot (1 + x) \cdot \text{ExpectedSales}(x) \cdot (1 - \text{OperatingRatio}(x)) \\
+        & \text{Retention}(x) = 1 - \alpha \cdot \max(0, x) \\
+        & \text{Competitiveness}(x) = 1 - \beta \cdot |x| \\
+        & \text{OperatingRatio}(x) = \frac{\text{BaseOperatingRatio}}{1 + x} \\
+        & \text{ExpectedSales}(x) = 1 - \gamma \cdot x
+        \end{align*}
+        """)
+
+elif page == "Results":
+    st.header("Optimization Results")
     
-    with col1:
-        # Display problem formulation
-        display_problem_formulation(returns, risk_values, min_alloc_values, max_risk)
-    
-    optimal_allocation = optimize_portfolio(returns, risk_values, min_alloc_values, max_risk)
-    
-    if optimal_allocation is not None:
-        feasible_points = generate_feasible_points(risk_values, min_alloc_values, max_risk)
-        
-        with col2:
-            # Create the 3D scatter plot
-            fig = go.Figure()
-            
-            # Feasible region as semi-transparent points
-            fig.add_trace(go.Scatter3d(
-                x=feasible_points[:, 0],
-                y=feasible_points[:, 1],
-                z=feasible_points[:, 2],
-                mode='markers',
-                marker=dict(
-                    size=2,
-                    color='blue',
-                    opacity=0.1
-                ),
-                name='Feasible Region'
-            ))
-            
-            # Optimal point
-            fig.add_trace(go.Scatter3d(
-                x=[optimal_allocation[0]],
-                y=[optimal_allocation[1]],
-                z=[optimal_allocation[2]],
-                mode='markers',
-                marker=dict(size=8, color='red'),
-                name='Optimal Allocation'
-            ))
-            
-            # Customize the layout
-            fig.update_layout(
-                scene = dict(
-                    xaxis_title='Auto',
-                    yaxis_title='Home',
-                    zaxis_title='Commercial',
-                    aspectmode='cube'
-                ),
-                width=600,
-                height=600,
-                title_text='Portfolio Allocation Visualization'
-            )
-            
-            # Display the plot
-            st.plotly_chart(fig)
-        
-        with col1:
-            # Display optimal allocation and expected return
-            st.subheader("Optimal Allocation:")
-            for p, alloc in zip(portfolios, optimal_allocation):
-                st.write(f"{p}: {alloc:.2%}")
-            
-            expected_return = sum(r * a for r, a in zip(returns, optimal_allocation))
-            st.write(f"Expected Return: {expected_return:.2%}")
-            st.write(f"Portfolio Risk: {sum(r * a for r, a in zip(risk_values, optimal_allocation)):.2%}")
-    else:
-        st.error("Optimization failed. Please adjust the parameters and try again.") 
+    # Summary dashboard
+    st.subheader("Summary Dashboard")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Optimal Flex", f"{results['Flex']:.2%}")
+    col2.metric("Final Premium", f"${results['Final Premium']:,.2f}")
+    col3.metric("Profit", f"${results['Profit']:,.2f}")
+
+    col4, col5, col6 = st.columns(3)
+    col4.metric("Retention Rate", f"{results['Retention']:.2%}")
+    col5.metric("Competitiveness", f"{results['Competitiveness']:.2%}")
+    col6.metric("Operating Ratio", f"{results['Operating Ratio']:.2%}")
+
+    # Visualizations
+    st.subheader("Visualizations")
+
+    # Create data for visualizations
+    flex_range = np.linspace(-0.15, 0.20, 100)
+    profit_values = [TP * (1 + x) * (1 - demand_elasticity * x) * (1 - (base_operating_ratio / (1 + x))) for x in flex_range]
+    retention_values = [1 - retention_sensitivity * max(0, x) for x in flex_range]
+    competitiveness_values = [1 - competitiveness_sensitivity * abs(x) for x in flex_range]
+    operating_ratio_values = [base_operating_ratio / (1 + x) for x in flex_range]
+
+    # Combined plot
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=flex_range, y=profit_values, mode='lines', name='Profit'))
+    fig.add_trace(go.Scatter(x=flex_range, y=retention_values, mode='lines', name='Retention'))
+    fig.add_trace(go.Scatter(x=flex_range, y=competitiveness_values, mode='lines', name='Competitiveness'))
+    fig.add_trace(go.Scatter(x=flex_range, y=operating_ratio_values, mode='lines', name='Operating Ratio'))
+    fig.add_vline(x=results['Flex'], line_dash="dash", line_color="red", annotation_text="Optimal Flex")
+    fig.update_layout(title="Key Metrics vs Flex", xaxis_title="Flex", yaxis_title="Value")
+    st.plotly_chart(fig, use_container_width=True)
+
+elif page == "Insights":
+    st.header("Analysis and Insights")
+    st.write(f"""
+    Based on the optimization results:
+
+    1. The optimal flex is {results['Flex']:.2%}, resulting in a final premium of ${results['Final Premium']:,.2f}.
+    2. This pricing strategy is expected to yield a profit of ${results['Profit']:,.2f}.
+    3. The estimated retention rate is {results['Retention']:.2%}, with a competitiveness score of {results['Competitiveness']:.2%}.
+    4. The operating ratio under this pricing strategy is {results['Operating Ratio']:.2%}.
+
+    Key insights:
+    - The model balances profitability with retention and competitiveness.
+    - The optimal flex suggests a {'increase' if results['Flex'] > 0 else 'decrease'} in premium from the technical premium.
+    - The operating ratio is maintained below the 92% threshold, ensuring overall profitability.
+
+    Adjusting the input parameters allows for scenario testing and sensitivity analysis. This can help in understanding how different market conditions or business priorities might affect the optimal pricing strategy.
+    """)
+
+    st.info("""
+    Remember, this is a simplified model. In reality, insurance pricing involves many more variables and complex interactions. 
+    Always consult with actuarial and financial experts when making real-world pricing decisions.
+    """)
+
+# Add a footer
+st.markdown("---")
+st.markdown("© NB Co-op Presentations Ltd. All rights reserved.")
